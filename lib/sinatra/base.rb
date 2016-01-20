@@ -69,6 +69,12 @@ module Sinatra
       request_method == "UNLINK"
     end
 
+    def params
+      super
+    rescue Rack::Utils::ParameterTypeError, Rack::Utils::InvalidParameterError => e
+      raise BadRequest, "Invalid query parameters: #{e.message}"
+    end
+
     private
 
     class AcceptEntry
@@ -219,6 +225,10 @@ module Sinatra
         call_without_check(env)
       end
     end
+  end
+
+  class BadRequest < TypeError #:nodoc:
+    def http_status; 400 end
   end
 
   class NotFound < NameError #:nodoc:
@@ -585,6 +595,11 @@ module Sinatra
       status.between? 500, 599
     end
 
+    # whether or not the status is set to 400
+    def bad_request?
+      status == 400
+    end
+
     # whether or not the status is set to 404
     def not_found?
       status == 404
@@ -899,9 +914,7 @@ module Sinatra
       @env      = env
       @request  = Request.new(env)
       @response = Response.new
-      @params   = indifferent_params(@request.params)
       template_cache.clear if settings.reload_templates
-      force_encoding(@params)
 
       @response['Content-Type'] = nil
       invoke { dispatch! }
@@ -1079,6 +1092,9 @@ module Sinatra
 
     # Dispatch a request with error handling.
     def dispatch!
+      @params = indifferent_params(@request.params)
+      force_encoding(@params)
+
       invoke do
         static! if settings.static? && (request.get? || request.head?)
         filter! :before
@@ -1111,11 +1127,12 @@ module Sinatra
       if server_error?
         dump_errors! boom if settings.dump_errors?
         raise boom if settings.show_exceptions? and settings.show_exceptions != :after_handler
-      end
-
-      if not_found?
+      elsif not_found?
         headers['X-Cascade'] = 'pass' if settings.x_cascade?
         body '<h1>Not Found</h1>'
+      elsif bad_request?
+        dump_errors! boom if settings.dump_errors?
+        halt status
       end
 
       res = error_block!(boom.class, boom) || error_block!(status, boom)
